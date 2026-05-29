@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import session from "express-session";
 import passport from "passport";
 import GoogleStrategy from "passport-google-oauth20";
-import { probeMedia, generateThumbnail, generateWaveform } from "./ffmpeg.js";
+import { probeMedia, generateThumbnail, generateWaveform, exportTimeline } from "./ffmpeg.js";
 import { emitProgress, onProgress } from "./events.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -478,6 +478,130 @@ app.post("/api/clips/:id/split", async (req, res) => {
     });
 
     res.json({ left: updated, right: newClip });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+// ---- Export / Render ----
+app.post("/api/projects/:id/export", async (req, res) => {
+  try {
+    const prisma = getPrisma();
+    const project = await prisma.project.findUnique({
+      where: { id: req.params.id },
+      include: {
+        tracks: {
+          orderBy: { order: "asc" },
+          include: { clips: { include: { mediaAsset: true } } },
+        },
+      },
+    });
+    if (!project) return res.status(404).json({ error: "proje bulunamadi" });
+
+    const { quality = "medium" } = req.body;
+
+    // Collect all clips from non-muted tracks
+    const clips = [];
+    for (const track of project.tracks) {
+      if (track.muted) continue;
+      for (const clip of track.clips) {
+        if (!clip.mediaAsset) continue;
+        clips.push({
+          filePath: clip.mediaAsset.filePath,
+          mediaStartMs: clip.mediaStartMs,
+          mediaEndMs: clip.mediaEndMs,
+          timelineStartMs: clip.timelineStartMs,
+          trackType: track.type,
+          hasVideo: clip.mediaAsset.type === "VIDEO",
+          hasAudio: !!clip.mediaAsset.sampleRate,
+          volume: clip.volume * track.volume,
+        });
+      }
+    }
+
+    // Calculate total timeline duration
+    let totalDurationMs = 0;
+    for (const c of clips) {
+      const end = c.timelineStartMs + (c.mediaEndMs - c.mediaStartMs);
+      if (end > totalDurationMs) totalDurationMs = end;
+    }
+
+    if (totalDurationMs <= 0) {
+      return res.status(400).json({ error: "timeline bos — export edilecek icerik yok" });
+    }
+
+    const exportDir = path.join(DATA_DIR, "projects", project.id, "exports");
+    fs.mkdirSync(exportDir, { recursive: true });
+
+    // Clean up old exports (keep last 2)
+    const oldFiles = fs.readdirSync(exportDir).filter((f) => f.startsWith("export_")).sort();
+    while (oldFiles.length > 2) {
+      const rm = oldFiles.shift();
+      try { fs.unlinkSync(path.join(exportDir, rm)); } catch {}
+    }
+
+    const outputPath = path.join(exportDir, `export_${Date.now()}.mp4`);
+
+    // Respond immediately — export runs in background
+    res.json({ status: "started" });
+
+    emitProgress(project.id, { stage: "EXPORT_START", percent: 0 });
+
+    try {
+      await exportTimeline({
+        clips,
+        width: project.width,
+        height: project.height,
+        fps: project.fps,
+        durationMs: totalDurationMs,
+        outputPath,
+        quality,
+        onProgress: (percent) => {
+          emitProgress(project.id, { stage: "EXPORTING", percent });
+        },
+      });
+
+      const stat = fs.statSync(outputPath);
+      emitProgress(project.id, {
+        stage: "EXPORT_DONE",
+        percent: 100,
+        fileSize: stat.size,
+        downloadUrl: `/api/projects/${project.id}/export/download`,
+      });
+
+      console.log(`[export] Done: ${outputPath} (${(stat.size / 1024 / 1024).toFixed(1)} MB)`);
+    } catch (e) {
+      console.error("[export] Error:", e.message);
+      emitProgress(project.id, {
+        stage: "EXPORT_ERROR",
+        error: String(e.message || e),
+      });
+    }
+  } catch (e) {
+    if (!res.headersSent) res.status(500).json({ error: String(e) });
+  }
+});
+
+app.get("/api/projects/:id/export/download", async (req, res) => {
+  try {
+    const exportDir = path.join(DATA_DIR, "projects", req.params.id, "exports");
+    if (!fs.existsSync(exportDir)) return res.status(404).json({ error: "export bulunamadi" });
+
+    const files = fs.readdirSync(exportDir)
+      .filter((f) => f.startsWith("export_") && f.endsWith(".mp4"))
+      .sort()
+      .reverse();
+
+    if (files.length === 0) return res.status(404).json({ error: "export dosyasi yok" });
+
+    const filePath = path.join(exportDir, files[0]);
+    if (!fs.existsSync(filePath)) return res.status(404).json({ error: "dosya bulunamadi" });
+
+    const stat = fs.statSync(filePath);
+    res.setHeader("Content-Type", "video/mp4");
+    res.setHeader("Content-Length", stat.size);
+    res.setHeader("Content-Disposition", `attachment; filename="export.mp4"`);
+    fs.createReadStream(filePath).pipe(res);
   } catch (e) {
     res.status(500).json({ error: String(e) });
   }

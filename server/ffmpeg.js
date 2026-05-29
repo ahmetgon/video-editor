@@ -1,4 +1,4 @@
-import { execFile as execFileCb } from "node:child_process";
+import { execFile as execFileCb, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import fs from "node:fs";
 import path from "node:path";
@@ -52,8 +52,7 @@ export async function generateThumbnail(inputPath, outputPath, timeMs = 0) {
 
 /** Generate waveform peaks JSON for audio */
 export async function generateWaveform(inputPath, outputPath, peaksPerSecond = 100) {
-  // Extract raw audio samples at low sample rate
-  const sampleRate = peaksPerSecond * 2; // Nyquist
+  const sampleRate = peaksPerSecond * 2;
   const { stdout } = await exec("ffmpeg", [
     "-i", inputPath,
     "-ac", "1",
@@ -63,9 +62,8 @@ export async function generateWaveform(inputPath, outputPath, peaksPerSecond = 1
     "pipe:1",
   ], { timeout: 120_000, maxBuffer: 50 * 1024 * 1024, encoding: "buffer" });
 
-  // Convert float32 buffer to peaks array
   const samples = new Float32Array(stdout.buffer, stdout.byteOffset, stdout.length / 4);
-  const blockSize = 2; // samples per peak (since sampleRate = peaksPerSecond * 2)
+  const blockSize = 2;
   const peaks = [];
 
   for (let i = 0; i < samples.length; i += blockSize) {
@@ -102,4 +100,190 @@ export async function extractAudio(inputPath, outputPath) {
     "-vn", "-acodec", "pcm_s16le", "-ar", "48000", "-ac", "2",
     outputPath,
   ], { timeout: 120_000 });
+}
+
+/**
+ * Export timeline to video file.
+ *
+ * @param {object} opts
+ * @param {Array} opts.clips - Array of { filePath, mediaStartMs, mediaEndMs, timelineStartMs, trackType, hasVideo, hasAudio }
+ * @param {number} opts.width
+ * @param {number} opts.height
+ * @param {number} opts.fps
+ * @param {number} opts.durationMs
+ * @param {string} opts.outputPath
+ * @param {string} opts.quality - "low" | "medium" | "high"
+ * @param {function} opts.onProgress - (percent: number) => void
+ * @returns {Promise<string>} outputPath
+ */
+export function exportTimeline({
+  clips,
+  width,
+  height,
+  fps,
+  durationMs,
+  outputPath,
+  quality = "medium",
+  onProgress,
+}) {
+  return new Promise((resolve, reject) => {
+    const totalDur = durationMs / 1000;
+
+    // Separate video and audio clips
+    const videoClips = clips
+      .filter((c) => c.trackType === "VIDEO" && c.hasVideo)
+      .sort((a, b) => a.timelineStartMs - b.timelineStartMs);
+
+    const audioClips = clips
+      .filter((c) => c.hasAudio)
+      .sort((a, b) => a.timelineStartMs - b.timelineStartMs);
+
+    // Deduplicate input files — map filePath → input index
+    const inputFiles = [];
+    const inputMap = new Map();
+
+    for (const clip of [...videoClips, ...audioClips]) {
+      if (!inputMap.has(clip.filePath)) {
+        inputMap.set(clip.filePath, inputFiles.length + 2); // +2 for base video & silence
+        inputFiles.push(clip.filePath);
+      }
+    }
+
+    // Build ffmpeg args
+    const args = ["-y"];
+
+    // Input 0: base black canvas
+    args.push("-f", "lavfi", "-i", `color=c=black:s=${width}x${height}:d=${totalDur}:r=${fps}`);
+    // Input 1: silence
+    args.push("-f", "lavfi", "-i", `anullsrc=channel_layout=stereo:sample_rate=48000:d=${totalDur}`);
+
+    // Media file inputs
+    for (const file of inputFiles) {
+      args.push("-i", file);
+    }
+
+    // ---- Build filter_complex ----
+    const filters = [];
+
+    // Video overlay chain
+    let lastVideoLabel = "0:v";
+    if (videoClips.length > 0) {
+      videoClips.forEach((clip, i) => {
+        const idx = inputMap.get(clip.filePath);
+        const startSec = (clip.mediaStartMs / 1000).toFixed(4);
+        const endSec = (clip.mediaEndMs / 1000).toFixed(4);
+        const offsetSec = (clip.timelineStartMs / 1000).toFixed(4);
+
+        const vLabel = `v${i}`;
+        const outLabel = i < videoClips.length - 1 ? `vtmp${i}` : "outv";
+
+        // Trim → reset PTS → offset → scale to project dimensions
+        filters.push(
+          `[${idx}:v]trim=start=${startSec}:end=${endSec},` +
+          `setpts=PTS-STARTPTS+${offsetSec}/TB,` +
+          `scale=${width}:${height}:force_original_aspect_ratio=decrease,` +
+          `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1[${vLabel}]`
+        );
+        // Overlay onto previous
+        filters.push(
+          `[${lastVideoLabel}][${vLabel}]overlay=eof_action=pass[${outLabel}]`
+        );
+        lastVideoLabel = outLabel;
+      });
+    } else {
+      filters.push("[0:v]copy[outv]");
+    }
+
+    // Audio mix chain
+    if (audioClips.length > 0) {
+      const aLabels = [];
+      audioClips.forEach((clip, i) => {
+        const idx = inputMap.get(clip.filePath);
+        const startSec = (clip.mediaStartMs / 1000).toFixed(4);
+        const endSec = (clip.mediaEndMs / 1000).toFixed(4);
+        const delayMs = Math.round(clip.timelineStartMs);
+        const label = `a${i}`;
+
+        filters.push(
+          `[${idx}:a]atrim=start=${startSec}:end=${endSec},` +
+          `asetpts=PTS-STARTPTS,` +
+          `adelay=${delayMs}|${delayMs}[${label}]`
+        );
+        aLabels.push(`[${label}]`);
+      });
+
+      if (aLabels.length === 1) {
+        filters.push(`${aLabels[0]}anull[outa]`);
+      } else {
+        filters.push(
+          `${aLabels.join("")}amix=inputs=${aLabels.length}:duration=longest:normalize=0[outa]`
+        );
+      }
+    } else {
+      filters.push("[1:a]acopy[outa]");
+    }
+
+    const filterComplex = filters.join(";\n");
+    args.push("-filter_complex", filterComplex);
+    args.push("-map", "[outv]", "-map", "[outa]");
+    args.push("-t", String(totalDur));
+
+    // Codec / quality
+    const presets = {
+      low: ["-preset", "ultrafast", "-crf", "28"],
+      medium: ["-preset", "medium", "-crf", "23"],
+      high: ["-preset", "slow", "-crf", "18"],
+    };
+    args.push("-c:v", "libx264", ...(presets[quality] || presets.medium));
+    args.push("-c:a", "aac", "-b:a", "192k");
+    args.push("-movflags", "+faststart");
+    args.push("-progress", "pipe:1"); // machine-readable progress on stdout
+    args.push(outputPath);
+
+    console.log("[export] ffmpeg", args.join(" ").slice(0, 300) + "...");
+
+    const proc = spawn("ffmpeg", args, { stdio: ["ignore", "pipe", "pipe"] });
+
+    let lastPercent = 0;
+    let progressBuf = "";
+
+    proc.stdout.on("data", (data) => {
+      progressBuf += data.toString();
+      const lines = progressBuf.split("\n");
+      progressBuf = lines.pop() || "";
+
+      for (const line of lines) {
+        if (line.startsWith("out_time_ms=")) {
+          const timeUs = parseInt(line.split("=")[1]);
+          if (timeUs > 0) {
+            const percent = Math.min(99, Math.round((timeUs / 1_000_000) / totalDur * 100));
+            if (percent > lastPercent) {
+              lastPercent = percent;
+              if (onProgress) onProgress(percent);
+            }
+          }
+        }
+      }
+    });
+
+    let stderr = "";
+    proc.stderr.on("data", (data) => {
+      stderr += data.toString();
+      // Keep stderr bounded
+      if (stderr.length > 10_000) stderr = stderr.slice(-5000);
+    });
+
+    proc.on("close", (code) => {
+      if (code === 0) {
+        if (onProgress) onProgress(100);
+        resolve(outputPath);
+      } else {
+        reject(new Error(`FFmpeg export failed (code ${code}): ${stderr.slice(-500)}`));
+      }
+    });
+
+    proc.on("error", (err) => {
+      reject(new Error(`FFmpeg spawn error: ${err.message}`));
+    });
+  });
 }

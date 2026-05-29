@@ -9,6 +9,7 @@ import { MediaBin } from "./components/media/MediaBin";
 import { VideoPreview } from "./components/preview/VideoPreview";
 import { TimelineCanvas } from "./components/timeline/TimelineCanvas";
 import { TrackHeaders } from "./components/timeline/TrackHeaders";
+import { ExportModal } from "./components/export/ExportModal";
 
 // ---- Login Screen ----
 function LoginScreen() {
@@ -96,6 +97,7 @@ function ProjectList({ onSelect }: { onSelect: (id: string) => void }) {
 function EditorView({ projectId, onBack }: { projectId: string; onBack: () => void }) {
   const project = useTimeline((s) => s.project);
   const setProject = useTimeline((s) => s.setProject);
+  const [showExport, setShowExport] = useState(false);
 
   usePlayback();
   useKeyboard();
@@ -112,7 +114,7 @@ function EditorView({ projectId, onBack }: { projectId: string; onBack: () => vo
 
   return (
     <div className="flex flex-col h-screen">
-      <Toolbar projectTitle={project.title} onBack={onBack} />
+      <Toolbar projectTitle={project.title} onBack={onBack} onExport={() => setShowExport(true)} />
 
       {/* Main area: media bin + preview + inspector */}
       <div className="flex flex-1 min-h-0">
@@ -136,6 +138,11 @@ function EditorView({ projectId, onBack }: { projectId: string; onBack: () => vo
         <TrackHeaders projectId={project.id} />
         <TimelineCanvas />
       </div>
+
+      {/* Export Modal */}
+      {showExport && (
+        <ExportModal projectId={project.id} onClose={() => setShowExport(false)} />
+      )}
     </div>
   );
 }

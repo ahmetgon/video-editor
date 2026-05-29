@@ -91,4 +91,12 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ timeMs }),
     }),
+
+  // Export
+  exportProject: (projectId: string, settings: { quality?: string }) =>
+    req<{ status: string }>(`/projects/${projectId}/export`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(settings),
+    }),
 };

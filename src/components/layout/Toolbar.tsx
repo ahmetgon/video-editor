@@ -4,9 +4,11 @@ import { api } from "../../api";
 export function Toolbar({
   projectTitle,
   onBack,
+  onExport,
 }: {
   projectTitle: string;
   onBack: () => void;
+  onExport: () => void;
 }) {
   const playing = useTimeline((s) => s.playing);
   const setPlaying = useTimeline((s) => s.setPlaying);
@@ -145,6 +147,16 @@ export function Toolbar({
         className="text-xs px-2 py-1 bg-gray-800 hover:bg-gray-700 rounded"
       >
         +
+      </button>
+
+      <div className="w-px h-5 bg-gray-700" />
+
+      {/* Export */}
+      <button
+        onClick={onExport}
+        className="text-xs px-3 py-1 bg-green-700 hover:bg-green-600 rounded font-medium"
+      >
+        Export
       </button>
     </div>
   );
