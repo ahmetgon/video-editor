@@ -414,6 +414,11 @@ app.patch("/api/clips/:id", async (req, res) => {
     if (req.body.mediaEndMs !== undefined) data.mediaEndMs = req.body.mediaEndMs;
     if (req.body.name !== undefined) data.name = req.body.name;
     if (req.body.volume !== undefined) data.volume = req.body.volume;
+    if (req.body.volumeKeyframes !== undefined) {
+      data.volumeKeyframes = typeof req.body.volumeKeyframes === "string"
+        ? req.body.volumeKeyframes
+        : JSON.stringify(req.body.volumeKeyframes);
+    }
     const clip = await getPrisma().clip.update({
       where: { id: req.params.id },
       data,
@@ -515,6 +520,7 @@ app.post("/api/projects/:id/export", async (req, res) => {
           hasVideo: clip.mediaAsset.type === "VIDEO",
           hasAudio: !!clip.mediaAsset.sampleRate,
           volume: clip.volume * track.volume,
+          volumeKeyframes: clip.volumeKeyframes,
         });
       }
     }

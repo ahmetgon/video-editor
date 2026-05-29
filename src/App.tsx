@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { api } from "./api";
 import type { AuthUser, Project } from "./types";
 import { useTimeline } from "./stores/timeline";
@@ -99,6 +99,45 @@ function EditorView({ projectId, onBack }: { projectId: string; onBack: () => vo
   const setProject = useTimeline((s) => s.setProject);
   const [showExport, setShowExport] = useState(false);
 
+  // Resizable timeline panel
+  const [timelineHeight, setTimelineHeight] = useState(280);
+  const isDragging = useRef(false);
+  const startY = useRef(0);
+  const startHeight = useRef(0);
+
+  const MIN_TIMELINE = 120;
+  const MAX_TIMELINE = 600;
+
+  const handleDividerDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    isDragging.current = true;
+    startY.current = e.clientY;
+    startHeight.current = timelineHeight;
+    document.body.style.cursor = "row-resize";
+    document.body.style.userSelect = "none";
+  }, [timelineHeight]);
+
+  useEffect(() => {
+    function onMove(e: MouseEvent) {
+      if (!isDragging.current) return;
+      const delta = startY.current - e.clientY;
+      const next = Math.min(MAX_TIMELINE, Math.max(MIN_TIMELINE, startHeight.current + delta));
+      setTimelineHeight(next);
+    }
+    function onUp() {
+      if (!isDragging.current) return;
+      isDragging.current = false;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    }
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, []);
+
   usePlayback();
   useKeyboard();
 
@@ -133,8 +172,17 @@ function EditorView({ projectId, onBack }: { projectId: string; onBack: () => vo
         </div>
       </div>
 
+      {/* Draggable divider */}
+      <div
+        onMouseDown={handleDividerDown}
+        className="h-1.5 bg-gray-800 hover:bg-blue-500 active:bg-blue-400 cursor-row-resize flex-shrink-0 transition-colors relative group"
+      >
+        <div className="absolute inset-x-0 -top-1 -bottom-1" />
+        <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-8 h-0.5 bg-gray-600 group-hover:bg-blue-300 rounded-full" />
+      </div>
+
       {/* Bottom: Timeline */}
-      <div className="h-[280px] border-t border-gray-800 flex-shrink-0 flex">
+      <div style={{ height: timelineHeight }} className="border-t border-gray-800 flex-shrink-0 flex">
         <TrackHeaders projectId={project.id} />
         <TimelineCanvas />
       </div>

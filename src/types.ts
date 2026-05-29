@@ -22,6 +22,11 @@ export interface MediaAsset {
   createdAt: string;
 }
 
+export interface VolumeKeyframe {
+  t: number; // time ms relative to clip start (0 = beginning)
+  v: number; // volume 0-1
+}
+
 export interface Clip {
   id: string;
   trackId: string;
@@ -32,6 +37,7 @@ export interface Clip {
   mediaStartMs: number;
   mediaEndMs: number;
   volume: number;
+  volumeKeyframes?: string; // JSON "[{t,v},...]"
 }
 
 export interface Track {

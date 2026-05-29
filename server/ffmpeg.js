@@ -103,6 +103,50 @@ export async function extractAudio(inputPath, outputPath) {
 }
 
 /**
+ * Build FFmpeg volume expression from keyframes.
+ * Keyframes: [{t: timeMs, v: volume}] relative to clip start.
+ * Returns null if no keyframes / flat volume.
+ */
+function buildVolumeExpression(keyframesJson, baseVolume = 1.0) {
+  let kf;
+  try {
+    kf = typeof keyframesJson === "string" ? JSON.parse(keyframesJson || "[]") : (keyframesJson || []);
+  } catch { return null; }
+
+  if (!kf || kf.length === 0) return null;
+
+  // Sort by time
+  kf = [...kf].sort((a, b) => a.t - b.t);
+
+  // If only 1 keyframe, return constant volume
+  if (kf.length === 1) return `${(kf[0].v * baseVolume).toFixed(4)}`;
+
+  // Build nested if expression with linear interpolation
+  // if(lt(t,t1), lerp(v0,v1,t), if(lt(t,t2), lerp(v1,v2,t), vLast))
+  let expr = `${(kf[kf.length - 1].v * baseVolume).toFixed(4)}`;
+
+  for (let i = kf.length - 2; i >= 0; i--) {
+    const t1 = kf[i].t / 1000;
+    const t2 = kf[i + 1].t / 1000;
+    const v1 = kf[i].v * baseVolume;
+    const v2 = kf[i + 1].v * baseVolume;
+    const dt = t2 - t1;
+
+    if (dt <= 0) continue;
+
+    // Linear interp: v1 + (v2-v1) * (t-t1) / (t2-t1)
+    const slope = ((v2 - v1) / dt).toFixed(6);
+    const lerp = `(${v1.toFixed(4)}+${slope}*(t-${t1.toFixed(4)}))`;
+    expr = `if(lt(t,${t2.toFixed(4)}),${lerp},${expr})`;
+  }
+
+  // Before first keyframe: use first keyframe's volume
+  expr = `if(lt(t,${(kf[0].t / 1000).toFixed(4)}),${(kf[0].v * baseVolume).toFixed(4)},${expr})`;
+
+  return expr;
+}
+
+/**
  * Export timeline to video file.
  *
  * @param {object} opts
@@ -134,8 +178,10 @@ export function exportTimeline({
       .filter((c) => c.trackType === "VIDEO" && c.hasVideo)
       .sort((a, b) => a.timelineStartMs - b.timelineStartMs);
 
+    // IMPORTANT: Only take audio from AUDIO tracks to avoid echo
+    // (VIDEO track clips also have audio but we don't want double audio)
     const audioClips = clips
-      .filter((c) => c.hasAudio)
+      .filter((c) => c.trackType === "AUDIO" && c.hasAudio)
       .sort((a, b) => a.timelineStartMs - b.timelineStartMs);
 
     // Deduplicate input files — map filePath → input index
@@ -204,9 +250,18 @@ export function exportTimeline({
         const delayMs = Math.round(clip.timelineStartMs);
         const label = `a${i}`;
 
+        // Build volume filter (with keyframe support)
+        let volumeFilter = "";
+        const volExpr = buildVolumeExpression(clip.volumeKeyframes, clip.volume);
+        if (volExpr) {
+          volumeFilter = `,volume='${volExpr}'`;
+        } else if (clip.volume !== 1.0) {
+          volumeFilter = `,volume=${clip.volume}`;
+        }
+
         filters.push(
           `[${idx}:a]atrim=start=${startSec}:end=${endSec},` +
-          `asetpts=PTS-STARTPTS,` +
+          `asetpts=PTS-STARTPTS${volumeFilter},` +
           `adelay=${delayMs}|${delayMs}[${label}]`
         );
         aLabels.push(`[${label}]`);
