@@ -1,0 +1,84 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Project {
+  id         String       @id @default(cuid())
+  title      String
+  width      Int          @default(1920)
+  height     Int          @default(1080)
+  fps        Float        @default(30)
+  durationMs Float        @default(0)
+  media      MediaAsset[]
+  tracks     Track[]
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
+}
+
+model MediaAsset {
+  id            String    @id @default(cuid())
+  projectId     String
+  project       Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  filename      String
+  filePath      String
+  type          MediaType
+  durationMs    Float?
+  width         Int?
+  height        Int?
+  fps           Float?
+  sampleRate    Int?
+  channels      Int?
+  fileSize      Int
+  waveformPath  String?
+  thumbnailPath String?
+  clips         Clip[]
+  createdAt     DateTime  @default(now())
+
+  @@index([projectId])
+}
+
+enum MediaType {
+  VIDEO
+  AUDIO
+  IMAGE
+}
+
+model Track {
+  id        String    @id @default(cuid())
+  projectId String
+  project   Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  name      String    @default("")
+  type      TrackType
+  order     Int
+  volume    Float     @default(1.0)
+  muted     Boolean   @default(false)
+  locked    Boolean   @default(false)
+  clips     Clip[]
+
+  @@index([projectId, order])
+}
+
+enum TrackType {
+  VIDEO
+  AUDIO
+}
+
+model Clip {
+  id              String     @id @default(cuid())
+  trackId         String
+  track           Track      @relation(fields: [trackId], references: [id], onDelete: Cascade)
+  mediaAssetId    String
+  mediaAsset      MediaAsset @relation(fields: [mediaAssetId], references: [id])
+  name            String     @default("")
+  timelineStartMs Float
+  mediaStartMs    Float      @default(0)
+  mediaEndMs      Float
+  volume          Float      @default(1.0)
+
+  @@index([trackId])
+}
