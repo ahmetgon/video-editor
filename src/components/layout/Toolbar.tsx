@@ -1,4 +1,5 @@
 import { useTimeline } from "../../stores/timeline";
+import { api } from "../../api";
 
 export function Toolbar({
   projectTitle,
@@ -15,11 +16,57 @@ export function Toolbar({
   const redo = useTimeline((s) => s.redo);
   const historyIndex = useTimeline((s) => s.historyIndex);
   const historyLength = useTimeline((s) => s.history.length);
+  const selectedClipId = useTimeline((s) => s.selectedClipId);
 
   const zoomPercent = Math.round(pxPerMs * 1000);
 
+  function handleSplit() {
+    const state = useTimeline.getState();
+    const ph = state.playheadMs;
+
+    if (state.selectedClipId) {
+      // Split selected clip
+      const clip = state.tracks.flatMap((t) => t.clips).find((c) => c.id === state.selectedClipId);
+      if (clip) {
+        const clipEnd = clip.timelineStartMs + (clip.mediaEndMs - clip.mediaStartMs);
+        if (ph > clip.timelineStartMs && ph < clipEnd) {
+          api.splitClip(clip.id, ph).then(({ left, right }) => {
+            useTimeline.getState().splitClipLocal(clip.id, left, right);
+          }).catch(() => {});
+        }
+      }
+    } else {
+      // Split all clips at playhead
+      splitAllAtPlayhead();
+    }
+  }
+
+  async function splitAllAtPlayhead() {
+    const state = useTimeline.getState();
+    const ph = state.playheadMs;
+    const clipsToSplit = state.tracks.flatMap((t) => t.clips).filter((clip) => {
+      const clipEnd = clip.timelineStartMs + (clip.mediaEndMs - clip.mediaStartMs);
+      return ph > clip.timelineStartMs && ph < clipEnd;
+    });
+
+    for (const clip of clipsToSplit) {
+      try {
+        const { left, right } = await api.splitClip(clip.id, ph);
+        useTimeline.getState().splitClipLocal(clip.id, left, right);
+      } catch {}
+    }
+  }
+
+  function handleDelete() {
+    const state = useTimeline.getState();
+    if (state.selectedClipId) {
+      api.deleteClip(state.selectedClipId).catch(() => {});
+      state.removeClipLocal(state.selectedClipId);
+    }
+  }
+
   return (
-    <div className="h-10 bg-gray-900 border-b border-gray-800 flex items-center px-3 gap-3 flex-shrink-0">
+    <div className="h-10 bg-gray-900 border-b border-gray-800 flex items-center px-3 gap-2 flex-shrink-0">
       <button
         onClick={onBack}
         className="text-xs text-gray-400 hover:text-white"
@@ -60,6 +107,27 @@ export function Toolbar({
         title="Space"
       >
         {playing ? "⏸ Durdur" : "▶ Oynat"}
+      </button>
+
+      <div className="w-px h-5 bg-gray-700" />
+
+      {/* Split */}
+      <button
+        onClick={handleSplit}
+        className="text-xs px-2 py-1 bg-gray-800 hover:bg-gray-700 rounded"
+        title="Bol (S = secili klip, Shift+S = tum klipler)"
+      >
+        ✂ Bol
+      </button>
+
+      {/* Delete */}
+      <button
+        onClick={handleDelete}
+        disabled={!selectedClipId}
+        className="text-xs px-2 py-1 bg-gray-800 hover:bg-gray-700 rounded disabled:opacity-30"
+        title="Sil (Del)"
+      >
+        🗑 Sil
       </button>
 
       <div className="w-px h-5 bg-gray-700" />

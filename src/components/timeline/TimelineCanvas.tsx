@@ -1,12 +1,12 @@
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef, useCallback, useState } from "react";
 import { useTimeline } from "../../stores/timeline";
 import { api } from "../../api";
-import type { Clip, Track } from "../../types";
+import { ContextMenu, type ContextMenuState } from "./ContextMenu";
+import type { Clip } from "../../types";
 
 const TRACK_HEIGHT = 60;
 const TRACK_GAP = 2;
 const RULER_HEIGHT = 28;
-const TRACK_HEADER_WIDTH = 140;
 
 const COLORS: Record<string, { bg: string; border: string; text: string }> = {
   VIDEO: { bg: "#1e3a5f", border: "#3b82f6", text: "#93c5fd" },
@@ -23,6 +23,7 @@ function formatRulerTime(ms: number) {
 export function TimelineCanvas() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const dragRef = useRef<{
     type: "move" | "trim-left" | "trim-right" | "scrub";
     clipId?: string;
@@ -39,8 +40,8 @@ export function TimelineCanvas() {
   const selectedClipId = useTimeline((s) => s.selectedClipId);
   const durationMs = useTimeline((s) => s.durationMs);
 
-  const timeToX = useCallback((ms: number) => TRACK_HEADER_WIDTH + ms * pxPerMs - scrollX, [pxPerMs, scrollX]);
-  const xToTime = useCallback((x: number) => (x - TRACK_HEADER_WIDTH + scrollX) / pxPerMs, [pxPerMs, scrollX]);
+  const timeToX = useCallback((ms: number) => ms * pxPerMs - scrollX, [pxPerMs, scrollX]);
+  const xToTime = useCallback((x: number) => (x + scrollX) / pxPerMs, [pxPerMs, scrollX]);
 
   // Draw
   useEffect(() => {
@@ -67,7 +68,6 @@ export function TimelineCanvas() {
     const totalViewMs = w / pxPerMs;
     const startMs = scrollX / pxPerMs;
 
-    // Auto-scale ruler ticks
     let tickInterval = 1000;
     const intervals = [100, 250, 500, 1000, 2000, 5000, 10000, 30000, 60000];
     for (const iv of intervals) {
@@ -80,7 +80,7 @@ export function TimelineCanvas() {
 
     for (let ms = firstTick; ms < startMs + totalViewMs + tickInterval; ms += tickInterval) {
       const x = timeToX(ms);
-      if (x < TRACK_HEADER_WIDTH || x > w) continue;
+      if (x < 0 || x > w) continue;
 
       ctx.strokeStyle = "#333";
       ctx.beginPath();
@@ -92,44 +92,20 @@ export function TimelineCanvas() {
       ctx.fillText(formatRulerTime(ms), x, RULER_HEIGHT - 12);
     }
 
-    // Ruler line
     ctx.strokeStyle = "#333";
     ctx.beginPath();
     ctx.moveTo(0, RULER_HEIGHT);
     ctx.lineTo(w, RULER_HEIGHT);
     ctx.stroke();
 
-    // ---- Track headers ----
-    ctx.fillStyle = "#0d0d0d";
-    ctx.fillRect(0, RULER_HEIGHT, TRACK_HEADER_WIDTH, h);
-
+    // ---- Track lanes + Clips ----
     tracks.forEach((track, i) => {
       const y = RULER_HEIGHT + i * (TRACK_HEIGHT + TRACK_GAP);
       const colors = COLORS[track.type];
 
       // Track background
       ctx.fillStyle = "#111";
-      ctx.fillRect(TRACK_HEADER_WIDTH, y, w - TRACK_HEADER_WIDTH, TRACK_HEIGHT);
-
-      // Track header
-      ctx.fillStyle = "#0d0d0d";
-      ctx.fillRect(0, y, TRACK_HEADER_WIDTH, TRACK_HEIGHT);
-
-      // Track name
-      ctx.fillStyle = colors.text;
-      ctx.font = "11px system-ui";
-      ctx.textAlign = "left";
-      ctx.fillText(track.name, 8, y + 20);
-
-      // Track type badge
-      ctx.fillStyle = track.muted ? "#444" : colors.border;
-      ctx.font = "9px system-ui";
-      ctx.fillText(track.type, 8, y + 36);
-
-      if (track.muted) {
-        ctx.fillStyle = "#ef4444";
-        ctx.fillText("MUTED", 50, y + 36);
-      }
+      ctx.fillRect(0, y, w, TRACK_HEIGHT);
 
       // Separator
       ctx.strokeStyle = "#1a1a1a";
@@ -145,52 +121,60 @@ export function TimelineCanvas() {
         const x2 = timeToX(clip.timelineStartMs + clipDur);
         const clipW = x2 - x1;
 
-        if (x2 < TRACK_HEADER_WIDTH || x1 > w) continue;
+        if (x2 < 0 || x1 > w) continue;
 
         const isSelected = clip.id === selectedClipId;
+        const drawX = Math.max(x1, 0);
+        const drawW = Math.min(x2, w) - drawX;
 
         // Clip body
-        ctx.fillStyle = colors.bg;
-        ctx.fillRect(Math.max(x1, TRACK_HEADER_WIDTH), y + 4, Math.min(clipW, w - Math.max(x1, TRACK_HEADER_WIDTH)), TRACK_HEIGHT - 8);
+        ctx.fillStyle = track.muted ? "#1a1a1a" : colors.bg;
+        ctx.fillRect(drawX, y + 4, drawW, TRACK_HEIGHT - 8);
 
         // Clip border
-        ctx.strokeStyle = isSelected ? "#fff" : colors.border;
+        ctx.strokeStyle = isSelected ? "#fff" : (track.muted ? "#333" : colors.border);
         ctx.lineWidth = isSelected ? 2 : 1;
-        ctx.strokeRect(Math.max(x1, TRACK_HEADER_WIDTH), y + 4, Math.min(clipW, w - Math.max(x1, TRACK_HEADER_WIDTH)), TRACK_HEIGHT - 8);
+        ctx.strokeRect(drawX, y + 4, drawW, TRACK_HEIGHT - 8);
         ctx.lineWidth = 1;
 
         // Clip label
         if (clipW > 40) {
-          ctx.fillStyle = colors.text;
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(drawX + 4, y + 4, drawW - 8, TRACK_HEIGHT - 8);
+          ctx.clip();
+
+          ctx.fillStyle = track.muted ? "#555" : colors.text;
           ctx.font = "10px system-ui";
           ctx.textAlign = "left";
           const label = clip.name || clip.mediaAsset?.filename || "";
-          const maxTextW = clipW - 12;
-          ctx.save();
-          ctx.beginPath();
-          ctx.rect(Math.max(x1, TRACK_HEADER_WIDTH) + 4, y + 4, maxTextW, TRACK_HEIGHT - 8);
-          ctx.clip();
-          ctx.fillText(label, Math.max(x1, TRACK_HEADER_WIDTH) + 6, y + 20);
+          ctx.fillText(label, drawX + 6, y + 20);
 
-          // Duration
-          ctx.fillStyle = "#666";
+          ctx.fillStyle = "#555";
           ctx.font = "9px system-ui";
-          ctx.fillText(`${(clipDur / 1000).toFixed(1)}s`, Math.max(x1, TRACK_HEADER_WIDTH) + 6, y + 34);
+          ctx.fillText(`${(clipDur / 1000).toFixed(1)}s`, drawX + 6, y + 34);
+
+          // Type indicator for video files on audio tracks
+          if (track.type === "AUDIO" && clip.mediaAsset?.type === "VIDEO") {
+            ctx.fillStyle = "#555";
+            ctx.fillText("(audio)", drawX + 50, y + 34);
+          }
+
           ctx.restore();
         }
 
         // Trim handles
         if (isSelected && clipW > 20) {
           ctx.fillStyle = "#fff";
-          ctx.fillRect(Math.max(x1, TRACK_HEADER_WIDTH), y + 4, 4, TRACK_HEIGHT - 8);
-          ctx.fillRect(x2 - 4, y + 4, 4, TRACK_HEIGHT - 8);
+          ctx.fillRect(Math.max(x1, 0), y + 4, 4, TRACK_HEIGHT - 8);
+          ctx.fillRect(Math.min(x2 - 4, w - 4), y + 4, 4, TRACK_HEIGHT - 8);
         }
       }
     });
 
     // ---- Playhead ----
     const phX = timeToX(playheadMs);
-    if (phX >= TRACK_HEADER_WIDTH && phX <= w) {
+    if (phX >= 0 && phX <= w) {
       ctx.strokeStyle = "#ef4444";
       ctx.lineWidth = 2;
       ctx.beginPath();
@@ -199,7 +183,6 @@ export function TimelineCanvas() {
       ctx.stroke();
       ctx.lineWidth = 1;
 
-      // Playhead triangle
       ctx.fillStyle = "#ef4444";
       ctx.beginPath();
       ctx.moveTo(phX - 6, 0);
@@ -209,13 +192,6 @@ export function TimelineCanvas() {
       ctx.fill();
     }
 
-    // ---- Track header separator line ----
-    ctx.strokeStyle = "#222";
-    ctx.beginPath();
-    ctx.moveTo(TRACK_HEADER_WIDTH, 0);
-    ctx.lineTo(TRACK_HEADER_WIDTH, h);
-    ctx.stroke();
-
   }, [tracks, playheadMs, pxPerMs, scrollX, selectedClipId, durationMs]);
 
   // Resize observer
@@ -223,15 +199,32 @@ export function TimelineCanvas() {
     const container = containerRef.current;
     if (!container) return;
     const ro = new ResizeObserver(() => {
-      // Trigger re-render via a dummy state update
       useTimeline.getState().setScrollX(useTimeline.getState().scrollX);
     });
     ro.observe(container);
     return () => ro.disconnect();
   }, []);
 
+  // Find clip at canvas position
+  function findClipAt(x: number, y: number): { clip: Clip; trackIndex: number } | null {
+    const trackIndex = Math.floor((y - RULER_HEIGHT) / (TRACK_HEIGHT + TRACK_GAP));
+    if (trackIndex < 0 || trackIndex >= tracks.length) return null;
+    const track = tracks[trackIndex];
+    const clickMs = xToTime(x);
+    for (const clip of track.clips) {
+      const clipDur = clip.mediaEndMs - clip.mediaStartMs;
+      if (clickMs >= clip.timelineStartMs && clickMs <= clip.timelineStartMs + clipDur) {
+        return { clip, trackIndex };
+      }
+    }
+    return null;
+  }
+
   // Mouse interactions
   function handleMouseDown(e: React.MouseEvent) {
+    if (e.button !== 0) return;
+    setContextMenu(null);
+
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
@@ -246,36 +239,26 @@ export function TimelineCanvas() {
       return;
     }
 
-    // Find track
-    const trackIndex = Math.floor((y - RULER_HEIGHT) / (TRACK_HEIGHT + TRACK_GAP));
-    if (trackIndex < 0 || trackIndex >= tracks.length) {
+    const result = findClipAt(x, y);
+    if (!result) {
       useTimeline.getState().selectClip(null);
-      return;
-    }
-
-    const track = tracks[trackIndex];
-    const clickMs = xToTime(x);
-
-    // Find clip at position
-    let clickedClip: Clip | null = null;
-    for (const clip of track.clips) {
-      const clipDur = clip.mediaEndMs - clip.mediaStartMs;
-      if (clickMs >= clip.timelineStartMs && clickMs <= clip.timelineStartMs + clipDur) {
-        clickedClip = clip;
-        break;
+      // Select track on click
+      const trackIndex = Math.floor((y - RULER_HEIGHT) / (TRACK_HEIGHT + TRACK_GAP));
+      if (trackIndex >= 0 && trackIndex < tracks.length) {
+        useTimeline.getState().selectTrack(tracks[trackIndex].id);
       }
-    }
-
-    if (!clickedClip) {
-      useTimeline.getState().selectClip(null);
       return;
     }
 
-    useTimeline.getState().selectClip(clickedClip.id);
+    const track = tracks[result.trackIndex];
+    if (track.locked) return; // Can't interact with locked tracks
 
-    // Determine drag type (trim handles = 8px from edges)
-    const clipX1 = timeToX(clickedClip.timelineStartMs);
-    const clipX2 = timeToX(clickedClip.timelineStartMs + (clickedClip.mediaEndMs - clickedClip.mediaStartMs));
+    useTimeline.getState().selectClip(result.clip.id);
+    useTimeline.getState().selectTrack(track.id);
+
+    // Determine drag type
+    const clipX1 = timeToX(result.clip.timelineStartMs);
+    const clipX2 = timeToX(result.clip.timelineStartMs + (result.clip.mediaEndMs - result.clip.mediaStartMs));
 
     let dragType: "move" | "trim-left" | "trim-right" = "move";
     if (x - clipX1 < 8) dragType = "trim-left";
@@ -283,11 +266,11 @@ export function TimelineCanvas() {
 
     dragRef.current = {
       type: dragType,
-      clipId: clickedClip.id,
+      clipId: result.clip.id,
       trackId: track.id,
       startX: x,
-      startMs: clickMs,
-      originalClip: { ...clickedClip },
+      startMs: xToTime(x),
+      originalClip: { ...result.clip },
     };
 
     if (dragType !== "move") {
@@ -297,7 +280,30 @@ export function TimelineCanvas() {
 
   function handleMouseMove(e: React.MouseEvent) {
     const drag = dragRef.current;
-    if (!drag) return;
+    if (!drag) {
+      // Update cursor based on position
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      const result = findClipAt(x, y);
+      if (result) {
+        const clipX1 = timeToX(result.clip.timelineStartMs);
+        const clipX2 = timeToX(result.clip.timelineStartMs + (result.clip.mediaEndMs - result.clip.mediaStartMs));
+        if (x - clipX1 < 8 || clipX2 - x < 8) {
+          canvas.style.cursor = "col-resize";
+        } else {
+          canvas.style.cursor = "grab";
+        }
+      } else if (y < RULER_HEIGHT) {
+        canvas.style.cursor = "text";
+      } else {
+        canvas.style.cursor = "default";
+      }
+      return;
+    }
+
     const rect = canvasRef.current!.getBoundingClientRect();
     const x = e.clientX - rect.left;
 
@@ -313,6 +319,7 @@ export function TimelineCanvas() {
     const state = useTimeline.getState();
 
     if (drag.type === "move") {
+      canvasRef.current!.style.cursor = "grabbing";
       state.updateClipLocal(drag.clipId, {
         timelineStartMs: Math.max(0, orig.timelineStartMs + deltaMs),
       });
@@ -360,6 +367,88 @@ export function TimelineCanvas() {
     dragRef.current = null;
   }
 
+  // Context menu
+  function handleContextMenu(e: React.MouseEvent) {
+    e.preventDefault();
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+
+    const state = useTimeline.getState();
+    const result = findClipAt(x, y);
+
+    if (result) {
+      state.selectClip(result.clip.id);
+      const clipEnd = result.clip.timelineStartMs + (result.clip.mediaEndMs - result.clip.mediaStartMs);
+      const canSplit = state.playheadMs > result.clip.timelineStartMs && state.playheadMs < clipEnd;
+
+      setContextMenu({
+        x: e.clientX,
+        y: e.clientY,
+        items: [
+          {
+            label: "✂  Playhead'de bol",
+            shortcut: "S",
+            disabled: !canSplit,
+            onClick: () => {
+              api.splitClip(result.clip.id, state.playheadMs).then(({ left, right }) => {
+                useTimeline.getState().splitClipLocal(result.clip.id, left, right);
+              }).catch(() => {});
+            },
+          },
+          {
+            label: "✂  Tum klipleri bol",
+            shortcut: "Shift+S",
+            onClick: () => splitAllAtPlayhead(),
+          },
+          {
+            label: "🗑  Sil",
+            shortcut: "Del",
+            danger: true,
+            onClick: () => {
+              api.deleteClip(result.clip.id).catch(() => {});
+              useTimeline.getState().removeClipLocal(result.clip.id);
+            },
+          },
+        ],
+      });
+    } else {
+      // Right-click on empty track area
+      const trackIndex = Math.floor((y - RULER_HEIGHT) / (TRACK_HEIGHT + TRACK_GAP));
+      if (trackIndex >= 0 && trackIndex < tracks.length) {
+        setContextMenu({
+          x: e.clientX,
+          y: e.clientY,
+          items: [
+            {
+              label: "✂  Tum klipleri bol",
+              shortcut: "Shift+S",
+              onClick: () => splitAllAtPlayhead(),
+            },
+          ],
+        });
+      }
+    }
+  }
+
+  async function splitAllAtPlayhead() {
+    const state = useTimeline.getState();
+    const ph = state.playheadMs;
+    const clipsToSplit = state.tracks.flatMap((t) => t.clips).filter((clip) => {
+      const clipEnd = clip.timelineStartMs + (clip.mediaEndMs - clip.mediaStartMs);
+      return ph > clip.timelineStartMs && ph < clipEnd;
+    });
+
+    for (const clip of clipsToSplit) {
+      try {
+        const { left, right } = await api.splitClip(clip.id, ph);
+        useTimeline.getState().splitClipLocal(clip.id, left, right);
+      } catch {}
+    }
+  }
+
   // Zoom with scroll wheel
   function handleWheel(e: React.WheelEvent) {
     e.preventDefault();
@@ -376,13 +465,17 @@ export function TimelineCanvas() {
     <div ref={containerRef} className="flex-1 overflow-hidden bg-gray-950 relative">
       <canvas
         ref={canvasRef}
-        className="block cursor-default"
+        className="block"
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseUp}
+        onContextMenu={handleContextMenu}
         onWheel={handleWheel}
       />
+      {contextMenu && (
+        <ContextMenu {...contextMenu} onClose={() => setContextMenu(null)} />
+      )}
     </div>
   );
 }

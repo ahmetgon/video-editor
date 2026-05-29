@@ -46,6 +46,7 @@ export interface TimelineState {
 
   // Clip mutations (with undo support)
   addClipLocal: (trackId: string, clip: Clip) => void;
+  addClipsBatch: (items: Array<{ trackId: string; clip: Clip }>) => void;
   removeClipLocal: (clipId: string) => void;
   updateClipLocal: (clipId: string, data: Partial<Clip>) => void;
   moveClipLocal: (clipId: string, newTrackId: string, newStartMs: number) => void;
@@ -152,6 +153,19 @@ export const useTimeline = create<TimelineState>((set, get) => ({
       const tracks = s.tracks.map((t) =>
         t.id === trackId ? { ...t, clips: [...t.clips, clip] } : t
       );
+      return { tracks, durationMs: calcDuration(tracks) };
+    });
+  },
+
+  addClipsBatch: (items) => {
+    get().pushHistory();
+    set((s) => {
+      let tracks = s.tracks;
+      for (const { trackId, clip } of items) {
+        tracks = tracks.map((t) =>
+          t.id === trackId ? { ...t, clips: [...t.clips, clip] } : t
+        );
+      }
       return { tracks, durationMs: calcDuration(tracks) };
     });
   },

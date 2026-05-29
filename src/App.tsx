@@ -8,6 +8,7 @@ import { Toolbar } from "./components/layout/Toolbar";
 import { MediaBin } from "./components/media/MediaBin";
 import { VideoPreview } from "./components/preview/VideoPreview";
 import { TimelineCanvas } from "./components/timeline/TimelineCanvas";
+import { TrackHeaders } from "./components/timeline/TrackHeaders";
 
 // ---- Login Screen ----
 function LoginScreen() {
@@ -132,6 +133,7 @@ function EditorView({ projectId, onBack }: { projectId: string; onBack: () => vo
 
       {/* Bottom: Timeline */}
       <div className="h-[280px] border-t border-gray-800 flex-shrink-0 flex">
+        <TrackHeaders projectId={project.id} />
         <TimelineCanvas />
       </div>
     </div>

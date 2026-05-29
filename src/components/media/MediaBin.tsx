@@ -43,28 +43,91 @@ export function MediaBin({
   }
 
   async function addToTimeline(asset: MediaAsset) {
-    // Find appropriate track
-    const trackType = asset.type === "VIDEO" ? "VIDEO" : "AUDIO";
-    let track = tracks.find((t: Track) => t.type === trackType);
-    if (!track) {
-      track = await api.addTrack(projectId, { type: trackType });
-      useTimeline.getState().addTrackLocal(track);
+    const state = useTimeline.getState();
+    const currentTracks = state.tracks;
+
+    if (asset.type === "VIDEO") {
+      // --- VIDEO with audio separation ---
+      // Find or create video track
+      let videoTrack = currentTracks.find((t: Track) => t.type === "VIDEO");
+      if (!videoTrack) {
+        videoTrack = await api.addTrack(projectId, { type: "VIDEO", name: "Video 1" });
+        state.addTrackLocal(videoTrack);
+      }
+
+      // Calculate start: append after last clip on video track
+      let startMs = 0;
+      for (const c of videoTrack.clips) {
+        const end = c.timelineStartMs + (c.mediaEndMs - c.mediaStartMs);
+        if (end > startMs) startMs = end;
+      }
+
+      // Create video clip
+      const videoClip = await api.addClip(videoTrack.id, {
+        mediaAssetId: asset.id,
+        timelineStartMs: startMs,
+        mediaEndMs: asset.durationMs || 5000,
+      });
+
+      // If video has audio, also create audio clip on audio track
+      const hasAudio = asset.sampleRate && asset.sampleRate > 0;
+      if (hasAudio) {
+        const freshTracks = useTimeline.getState().tracks;
+        let audioTrack = freshTracks.find((t: Track) => t.type === "AUDIO");
+        if (!audioTrack) {
+          audioTrack = await api.addTrack(projectId, { type: "AUDIO", name: "Audio 1" });
+          state.addTrackLocal(audioTrack);
+        }
+
+        const audioClip = await api.addClip(audioTrack.id, {
+          mediaAssetId: asset.id,
+          timelineStartMs: startMs, // Same start as video clip
+          mediaEndMs: asset.durationMs || 5000,
+          name: `${asset.filename} (audio)`,
+        });
+
+        // Add both clips as a batch (single undo step)
+        state.addClipsBatch([
+          { trackId: videoTrack.id, clip: videoClip },
+          { trackId: audioTrack.id, clip: audioClip },
+        ]);
+      } else {
+        state.addClipLocal(videoTrack.id, videoClip);
+      }
+    } else {
+      // --- AUDIO / IMAGE ---
+      const trackType = asset.type === "IMAGE" ? "VIDEO" : "AUDIO";
+      let track = currentTracks.find((t: Track) => t.type === trackType);
+      if (!track) {
+        const name = trackType === "VIDEO" ? "Video 1" : "Audio 1";
+        track = await api.addTrack(projectId, { type: trackType, name });
+        state.addTrackLocal(track);
+      }
+
+      let startMs = 0;
+      for (const c of track.clips) {
+        const end = c.timelineStartMs + (c.mediaEndMs - c.mediaStartMs);
+        if (end > startMs) startMs = end;
+      }
+
+      const clip = await api.addClip(track.id, {
+        mediaAssetId: asset.id,
+        timelineStartMs: startMs,
+        mediaEndMs: asset.durationMs || 5000,
+      });
+
+      state.addClipLocal(track.id, clip);
     }
+  }
 
-    // Calculate position: append after last clip on this track
-    let startMs = 0;
-    for (const c of track.clips) {
-      const end = c.timelineStartMs + (c.mediaEndMs - c.mediaStartMs);
-      if (end > startMs) startMs = end;
+  async function removeMedia(asset: MediaAsset) {
+    if (!confirm(`"${asset.filename}" silinsin mi?`)) return;
+    try {
+      await api.deleteMedia(projectId, asset.id);
+      onMediaChange();
+    } catch (e: any) {
+      alert(e.message || "Silme hatasi");
     }
-
-    const clip = await api.addClip(track.id, {
-      mediaAssetId: asset.id,
-      timelineStartMs: startMs,
-      mediaEndMs: asset.durationMs || 5000,
-    });
-
-    useTimeline.getState().addClipLocal(track.id, clip);
   }
 
   return (
@@ -136,12 +199,22 @@ export function MediaBin({
                 {asset.width && ` / ${asset.width}x${asset.height}`}
               </p>
             </div>
-            <button
-              onClick={(e) => { e.stopPropagation(); addToTimeline(asset); }}
-              className="text-[10px] px-1.5 py-0.5 bg-gray-700 hover:bg-gray-600 rounded opacity-0 group-hover:opacity-100"
-            >
-              +
-            </button>
+            <div className="flex gap-0.5 opacity-0 group-hover:opacity-100">
+              <button
+                onClick={(e) => { e.stopPropagation(); addToTimeline(asset); }}
+                className="text-[10px] px-1.5 py-0.5 bg-gray-700 hover:bg-gray-600 rounded"
+                title="Timeline'a ekle"
+              >
+                +
+              </button>
+              <button
+                onClick={(e) => { e.stopPropagation(); removeMedia(asset); }}
+                className="text-[10px] px-1.5 py-0.5 bg-gray-700 hover:bg-red-900/50 text-gray-400 hover:text-red-400 rounded"
+                title="Medya sil"
+              >
+                ×
+              </button>
+            </div>
           </div>
         ))}
       </div>
