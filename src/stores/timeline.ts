@@ -67,7 +67,7 @@ function calcDuration(tracks: Track[]): number {
   let max = 0;
   for (const t of tracks) {
     for (const c of t.clips) {
-      const end = c.timelineStartMs + (c.mediaEndMs - c.mediaStartMs);
+      const end = c.timelineStartMs + (c.mediaEndMs - c.mediaStartMs) / (c.speed || 1);
       if (end > max) max = end;
     }
   }

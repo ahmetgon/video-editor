@@ -38,6 +38,7 @@ export interface Clip {
   mediaEndMs: number;
   volume: number;
   volumeKeyframes?: string; // JSON "[{t,v},...]"
+  speed: number;
 }
 
 export interface Track {

@@ -26,8 +26,8 @@ export function VideoPreview() {
   for (const track of videoTracks) {
     if (track.muted) continue;
     for (const clip of track.clips) {
-      const clipDur = clip.mediaEndMs - clip.mediaStartMs;
-      if (playheadMs >= clip.timelineStartMs && playheadMs < clip.timelineStartMs + clipDur) {
+      const timelineDur = (clip.mediaEndMs - clip.mediaStartMs) / (clip.speed || 1);
+      if (playheadMs >= clip.timelineStartMs && playheadMs < clip.timelineStartMs + timelineDur) {
         activeClip = clip;
         break;
       }
@@ -54,9 +54,15 @@ export function VideoPreview() {
       setCurrentAssetId(activeClip.mediaAssetId);
     }
 
-    // Seek to correct position within clip
-    const mediaTimeMs = activeClip.mediaStartMs + (playheadMs - activeClip.timelineStartMs);
+    // Seek to correct position within clip (speed maps timeline → media time)
+    const clipSpeed = activeClip.speed || 1;
+    const mediaTimeMs = activeClip.mediaStartMs + (playheadMs - activeClip.timelineStartMs) * clipSpeed;
     const mediaTimeSec = mediaTimeMs / 1000;
+
+    // Set playback rate
+    if (video.playbackRate !== clipSpeed) {
+      video.playbackRate = clipSpeed;
+    }
 
     if (!playing) {
       video.pause();
@@ -71,7 +77,8 @@ export function VideoPreview() {
     const video = videoRef.current;
     if (!video || playing || !activeClip) return;
 
-    const mediaTimeMs = activeClip.mediaStartMs + (playheadMs - activeClip.timelineStartMs);
+    const clipSpeed = activeClip.speed || 1;
+    const mediaTimeMs = activeClip.mediaStartMs + (playheadMs - activeClip.timelineStartMs) * clipSpeed;
     const mediaTimeSec = mediaTimeMs / 1000;
     if (Math.abs(video.currentTime - mediaTimeSec) > 0.05) {
       video.currentTime = mediaTimeSec;

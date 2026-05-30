@@ -28,6 +28,11 @@ function parseKeyframes(clip: Clip): VolumeKeyframe[] {
   }
 }
 
+/** Effective timeline duration of a clip (accounts for speed) */
+function clipTimelineDur(clip: Clip): number {
+  return (clip.mediaEndMs - clip.mediaStartMs) / (clip.speed || 1);
+}
+
 /** Get interpolated volume at a given time (ms relative to clip start) */
 function getVolumeAt(keyframes: VolumeKeyframe[], t: number, baseVolume: number): number {
   if (keyframes.length === 0) return baseVolume;
@@ -166,9 +171,10 @@ export function TimelineCanvas() {
 
       // ---- Clips ----
       for (const clip of track.clips) {
-        const clipDur = clip.mediaEndMs - clip.mediaStartMs;
+        const mediaDur = clip.mediaEndMs - clip.mediaStartMs;
+        const tlDur = clipTimelineDur(clip);
         const x1 = timeToX(clip.timelineStartMs);
-        const x2 = timeToX(clip.timelineStartMs + clipDur);
+        const x2 = timeToX(clip.timelineStartMs + tlDur);
         const clipW = x2 - x1;
         if (x2 < 0 || x1 > w) continue;
 
@@ -177,6 +183,7 @@ export function TimelineCanvas() {
         const drawW = Math.min(x2, w) - drawX;
         const clipY = y + 4;
         const clipH = TRACK_HEIGHT - 8;
+        const speed = clip.speed || 1;
 
         // Clip body
         ctx.fillStyle = track.muted ? "#1a1a1a" : colors.bg;
@@ -190,8 +197,9 @@ export function TimelineCanvas() {
           ctx.fillStyle = track.muted ? "#2a2a2a" : (colors.text + "25");
 
           for (let px = 0; px < drawW; px++) {
+            // Map pixel to media time (accounting for speed)
             const timeMs =
-              clip.mediaStartMs + ((drawX + px - x1) / clipW) * clipDur;
+              clip.mediaStartMs + ((drawX + px - x1) / clipW) * mediaDur;
             const peakIdx = Math.floor((timeMs / 1000) * pps);
             if (peakIdx >= 0 && peakIdx < waveform.peaks.length) {
               const amp = waveform.peaks[peakIdx] * clipH * 0.4;
@@ -221,7 +229,37 @@ export function TimelineCanvas() {
           ctx.fillText(label, drawX + 6, clipY + 14);
           ctx.fillStyle = "#555";
           ctx.font = "9px system-ui";
-          ctx.fillText(`${(clipDur / 1000).toFixed(1)}s`, drawX + 6, clipY + 26);
+          const durLabel = `${(tlDur / 1000).toFixed(1)}s`;
+          ctx.fillText(durLabel, drawX + 6, clipY + 26);
+
+          // Speed badge
+          if (speed !== 1) {
+            const speedLabel = `${speed}x`;
+            const textW = ctx.measureText(speedLabel).width;
+            const badgeX = drawX + drawW - textW - 10;
+            if (badgeX > drawX + 6) {
+              ctx.fillStyle = "#7c3aed";
+              ctx.beginPath();
+              const bx = badgeX - 3;
+              const by = clipY + 4;
+              const bw = textW + 6;
+              const bh = 14;
+              const br = 3;
+              ctx.moveTo(bx + br, by);
+              ctx.lineTo(bx + bw - br, by);
+              ctx.quadraticCurveTo(bx + bw, by, bx + bw, by + br);
+              ctx.lineTo(bx + bw, by + bh - br);
+              ctx.quadraticCurveTo(bx + bw, by + bh, bx + bw - br, by + bh);
+              ctx.lineTo(bx + br, by + bh);
+              ctx.quadraticCurveTo(bx, by + bh, bx, by + bh - br);
+              ctx.lineTo(bx, by + br);
+              ctx.quadraticCurveTo(bx, by, bx + br, by);
+              ctx.fill();
+              ctx.fillStyle = "#e0d4ff";
+              ctx.font = "bold 9px system-ui";
+              ctx.fillText(speedLabel, badgeX, clipY + 15);
+            }
+          }
           ctx.restore();
         }
 
@@ -233,7 +271,7 @@ export function TimelineCanvas() {
               ? [...keyframes].sort((a, b) => a.t - b.t)
               : [
                   { t: 0, v: clip.volume },
-                  { t: clipDur, v: clip.volume },
+                  { t: mediaDur, v: clip.volume },
                 ];
 
           ctx.beginPath();
@@ -241,7 +279,7 @@ export function TimelineCanvas() {
           ctx.lineWidth = 1.5;
 
           for (let ki = 0; ki < kf.length; ki++) {
-            const kx = x1 + (kf[ki].t / clipDur) * clipW;
+            const kx = x1 + (kf[ki].t / mediaDur) * clipW;
             const ky = clipY + clipH - kf[ki].v * clipH;
             if (ki === 0) ctx.moveTo(Math.max(kx, drawX), ky);
             else ctx.lineTo(kx, ky);
@@ -252,7 +290,7 @@ export function TimelineCanvas() {
           // Keyframe dots (only when selected)
           if (isSelected && keyframes.length > 0) {
             for (const kfp of keyframes) {
-              const kx = x1 + (kfp.t / clipDur) * clipW;
+              const kx = x1 + (kfp.t / mediaDur) * clipW;
               const ky = clipY + clipH - kfp.v * clipH;
               if (kx < drawX - 4 || kx > drawX + drawW + 4) continue;
 
@@ -318,8 +356,8 @@ export function TimelineCanvas() {
     const track = tracks[trackIndex];
     const clickMs = xToTime(x);
     for (const clip of track.clips) {
-      const clipDur = clip.mediaEndMs - clip.mediaStartMs;
-      if (clickMs >= clip.timelineStartMs && clickMs <= clip.timelineStartMs + clipDur) {
+      const tlDur = clipTimelineDur(clip);
+      if (clickMs >= clip.timelineStartMs && clickMs <= clip.timelineStartMs + tlDur) {
         return { clip, trackIndex };
       }
     }
@@ -336,15 +374,16 @@ export function TimelineCanvas() {
     const keyframes = parseKeyframes(clip);
     if (keyframes.length === 0) return -1;
 
-    const clipDur = clip.mediaEndMs - clip.mediaStartMs;
+    const mediaDur = clip.mediaEndMs - clip.mediaStartMs;
+    const tlDur = clipTimelineDur(clip);
     const x1 = timeToX(clip.timelineStartMs);
-    const clipW = timeToX(clip.timelineStartMs + clipDur) - x1;
+    const clipW = timeToX(clip.timelineStartMs + tlDur) - x1;
     const trackY = RULER_HEIGHT + trackIndex * (TRACK_HEIGHT + TRACK_GAP);
     const clipY = trackY + 4;
     const clipH = TRACK_HEIGHT - 8;
 
     for (let i = 0; i < keyframes.length; i++) {
-      const kx = x1 + (keyframes[i].t / clipDur) * clipW;
+      const kx = x1 + (keyframes[i].t / mediaDur) * clipW;
       const ky = clipY + clipH - keyframes[i].v * clipH;
       if (Math.abs(mouseX - kx) < 7 && Math.abs(mouseY - ky) < 7) {
         return i;
@@ -406,9 +445,7 @@ export function TimelineCanvas() {
     useTimeline.getState().selectTrack(track.id);
 
     const clipX1 = timeToX(result.clip.timelineStartMs);
-    const clipX2 = timeToX(
-      result.clip.timelineStartMs + (result.clip.mediaEndMs - result.clip.mediaStartMs)
-    );
+    const clipX2 = timeToX(result.clip.timelineStartMs + clipTimelineDur(result.clip));
 
     let dragType: "move" | "trim-left" | "trim-right" = "move";
     if (x - clipX1 < 8) dragType = "trim-left";
@@ -449,9 +486,7 @@ export function TimelineCanvas() {
           }
         }
         const clipX1 = timeToX(result.clip.timelineStartMs);
-        const clipX2 = timeToX(
-          result.clip.timelineStartMs + (result.clip.mediaEndMs - result.clip.mediaStartMs)
-        );
+        const clipX2 = timeToX(result.clip.timelineStartMs + clipTimelineDur(result.clip));
         if (x - clipX1 < 8 || clipX2 - x < 8) {
           canvas.style.cursor = "col-resize";
         } else {
@@ -500,6 +535,7 @@ export function TimelineCanvas() {
     if (!drag.clipId || !drag.originalClip) return;
     const deltaMs = (x - drag.startX) / pxPerMs;
     const orig = drag.originalClip;
+    const speed = orig.speed || 1;
     const state = useTimeline.getState();
 
     if (drag.type === "move") {
@@ -508,8 +544,10 @@ export function TimelineCanvas() {
         timelineStartMs: Math.max(0, orig.timelineStartMs + deltaMs),
       });
     } else if (drag.type === "trim-left") {
-      const newMediaStart = Math.max(0, orig.mediaStartMs + deltaMs);
-      const newTimelineStart = orig.timelineStartMs + (newMediaStart - orig.mediaStartMs);
+      // Timeline delta maps to media delta via speed
+      const mediaDelta = deltaMs * speed;
+      const newMediaStart = Math.max(0, orig.mediaStartMs + mediaDelta);
+      const newTimelineStart = orig.timelineStartMs + (newMediaStart - orig.mediaStartMs) / speed;
       if (newMediaStart < orig.mediaEndMs - 100) {
         state.updateClipLocal(drag.clipId, {
           mediaStartMs: newMediaStart,
@@ -517,7 +555,8 @@ export function TimelineCanvas() {
         });
       }
     } else if (drag.type === "trim-right") {
-      const newMediaEnd = Math.max(orig.mediaStartMs + 100, orig.mediaEndMs + deltaMs);
+      const mediaDelta = deltaMs * speed;
+      const newMediaEnd = Math.max(orig.mediaStartMs + 100, orig.mediaEndMs + mediaDelta);
       const maxEnd = orig.mediaAsset?.durationMs || Infinity;
       state.updateClipLocal(drag.clipId, {
         mediaEndMs: Math.min(newMediaEnd, maxEnd),
@@ -570,14 +609,16 @@ export function TimelineCanvas() {
     if (!result || result.clip.id !== selectedClipId) return;
 
     const clip = result.clip;
-    const clipDur = clip.mediaEndMs - clip.mediaStartMs;
+    const mediaDur = clip.mediaEndMs - clip.mediaStartMs;
+    const tlDur = clipTimelineDur(clip);
     const x1 = timeToX(clip.timelineStartMs);
-    const clipW = timeToX(clip.timelineStartMs + clipDur) - x1;
+    const clipW = timeToX(clip.timelineStartMs + tlDur) - x1;
     const trackY = RULER_HEIGHT + result.trackIndex * (TRACK_HEIGHT + TRACK_GAP);
     const clipY = trackY + 4;
     const clipH = TRACK_HEIGHT - 8;
 
-    const t = Math.max(0, Math.min(clipDur, ((x - x1) / clipW) * clipDur));
+    // Map pixel position to media time (keyframes are in media time)
+    const t = Math.max(0, Math.min(mediaDur, ((x - x1) / clipW) * mediaDur));
     const v = Math.max(0, Math.min(1, 1 - (y - clipY) / clipH));
 
     const keyframes = parseKeyframes(clip);
@@ -605,8 +646,7 @@ export function TimelineCanvas() {
 
     if (result) {
       state.selectClip(result.clip.id);
-      const clipEnd =
-        result.clip.timelineStartMs + (result.clip.mediaEndMs - result.clip.mediaStartMs);
+      const clipEnd = result.clip.timelineStartMs + clipTimelineDur(result.clip);
       const canSplit =
         state.playheadMs > result.clip.timelineStartMs && state.playheadMs < clipEnd;
 
@@ -614,7 +654,7 @@ export function TimelineCanvas() {
       const kfIdx = findKeyframeAt(result.clip, result.trackIndex, x, y);
       const keyframes = parseKeyframes(result.clip);
 
-      const items = [
+      const items: Array<{ label: string; shortcut: string; disabled?: boolean; danger?: boolean; separator?: boolean; active?: boolean; onClick: () => void }> = [
         {
           label: "✂  Playhead'de bol",
           shortcut: "S",
@@ -644,7 +684,28 @@ export function TimelineCanvas() {
         },
       ];
 
+      // Speed section
+      const currentSpeed = result.clip.speed || 1;
+      const speedPresets = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4];
+      items.push({ label: "", shortcut: "", separator: true, onClick: () => {} });
+      for (const sp of speedPresets) {
+        items.push({
+          label: `⚡ ${sp}x${sp === 1 ? " (Normal)" : ""}`,
+          shortcut: sp === currentSpeed ? "✓" : "",
+          active: sp === currentSpeed,
+          onClick: () => {
+            if (sp === currentSpeed) return;
+            useTimeline.getState().pushHistory();
+            useTimeline.getState().updateClipLocal(result.clip.id, { speed: sp });
+            api.updateClip(result.clip.id, { speed: sp } as Partial<Clip>).catch(() => {});
+          },
+        });
+      }
+
       // Volume keyframe actions
+      if (kfIdx >= 0 || keyframes.length > 0) {
+        items.push({ label: "", shortcut: "", separator: true, onClick: () => {} });
+      }
       if (kfIdx >= 0) {
         items.push({
           label: "🔶  Volume noktasini sil",
@@ -697,7 +758,7 @@ export function TimelineCanvas() {
     const state = useTimeline.getState();
     const ph = state.playheadMs;
     const clipsToSplit = state.tracks.flatMap((t) => t.clips).filter((clip) => {
-      const clipEnd = clip.timelineStartMs + (clip.mediaEndMs - clip.mediaStartMs);
+      const clipEnd = clip.timelineStartMs + clipTimelineDur(clip);
       return ph > clip.timelineStartMs && ph < clipEnd;
     });
     for (const clip of clipsToSplit) {

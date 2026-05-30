@@ -414,6 +414,7 @@ app.patch("/api/clips/:id", async (req, res) => {
     if (req.body.mediaEndMs !== undefined) data.mediaEndMs = req.body.mediaEndMs;
     if (req.body.name !== undefined) data.name = req.body.name;
     if (req.body.volume !== undefined) data.volume = req.body.volume;
+    if (req.body.speed !== undefined) data.speed = Math.max(0.1, Math.min(16, Number(req.body.speed) || 1));
     if (req.body.volumeKeyframes !== undefined) {
       data.volumeKeyframes = typeof req.body.volumeKeyframes === "string"
         ? req.body.volumeKeyframes
@@ -449,13 +450,15 @@ app.post("/api/clips/:id/split", async (req, res) => {
     const splitAtMs = req.body.timeMs;
     if (splitAtMs == null) return res.status(400).json({ error: "timeMs gerekli" });
 
+    const clipSpeed = clip.speed || 1;
     const clipDuration = clip.mediaEndMs - clip.mediaStartMs;
+    const timelineDuration = clipDuration / clipSpeed;
     const relativeMs = splitAtMs - clip.timelineStartMs;
-    if (relativeMs <= 0 || relativeMs >= clipDuration) {
+    if (relativeMs <= 0 || relativeMs >= timelineDuration) {
       return res.status(400).json({ error: "split noktasi clip sinirlarinin disinda" });
     }
 
-    const mediaSplitMs = clip.mediaStartMs + relativeMs;
+    const mediaSplitMs = clip.mediaStartMs + relativeMs * clipSpeed;
 
     // Update original clip (left part)
     await prisma.clip.update({
@@ -473,6 +476,7 @@ app.post("/api/clips/:id/split", async (req, res) => {
         mediaStartMs: mediaSplitMs,
         mediaEndMs: clip.mediaEndMs,
         volume: clip.volume,
+        speed: clip.speed || 1,
       },
       include: { mediaAsset: true },
     });
@@ -521,14 +525,15 @@ app.post("/api/projects/:id/export", async (req, res) => {
           hasAudio: !!clip.mediaAsset.sampleRate,
           volume: clip.volume * track.volume,
           volumeKeyframes: clip.volumeKeyframes,
+          speed: clip.speed || 1,
         });
       }
     }
 
-    // Calculate total timeline duration
+    // Calculate total timeline duration (accounting for speed)
     let totalDurationMs = 0;
     for (const c of clips) {
-      const end = c.timelineStartMs + (c.mediaEndMs - c.mediaStartMs);
+      const end = c.timelineStartMs + (c.mediaEndMs - c.mediaStartMs) / (c.speed || 1);
       if (end > totalDurationMs) totalDurationMs = end;
     }
 

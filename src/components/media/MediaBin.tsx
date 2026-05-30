@@ -58,7 +58,7 @@ export function MediaBin({
       // Calculate start: append after last clip on video track
       let startMs = 0;
       for (const c of videoTrack.clips) {
-        const end = c.timelineStartMs + (c.mediaEndMs - c.mediaStartMs);
+        const end = c.timelineStartMs + (c.mediaEndMs - c.mediaStartMs) / (c.speed || 1);
         if (end > startMs) startMs = end;
       }
 
@@ -106,7 +106,7 @@ export function MediaBin({
 
       let startMs = 0;
       for (const c of track.clips) {
-        const end = c.timelineStartMs + (c.mediaEndMs - c.mediaStartMs);
+        const end = c.timelineStartMs + (c.mediaEndMs - c.mediaStartMs) / (c.speed || 1);
         if (end > startMs) startMs = end;
       }
 

@@ -35,7 +35,7 @@ export function useKeyboard() {
             e.preventDefault();
             const clip = state.tracks.flatMap((t) => t.clips).find((c) => c.id === state.selectedClipId);
             if (clip) {
-              const clipEnd = clip.timelineStartMs + (clip.mediaEndMs - clip.mediaStartMs);
+              const clipEnd = clip.timelineStartMs + (clip.mediaEndMs - clip.mediaStartMs) / (clip.speed || 1);
               if (state.playheadMs > clip.timelineStartMs && state.playheadMs < clipEnd) {
                 api.splitClip(clip.id, state.playheadMs).then(({ left, right }) => {
                   useTimeline.getState().splitClipLocal(clip.id, left, right);
@@ -97,7 +97,7 @@ export function useKeyboard() {
       const state = useTimeline.getState();
       const ph = state.playheadMs;
       const clipsToSplit = state.tracks.flatMap((t) => t.clips).filter((clip) => {
-        const clipEnd = clip.timelineStartMs + (clip.mediaEndMs - clip.mediaStartMs);
+        const clipEnd = clip.timelineStartMs + (clip.mediaEndMs - clip.mediaStartMs) / (clip.speed || 1);
         return ph > clip.timelineStartMs && ph < clipEnd;
       });
 

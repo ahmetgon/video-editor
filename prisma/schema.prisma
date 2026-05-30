@@ -80,6 +80,7 @@ model Clip {
   mediaEndMs      Float
   volume          Float      @default(1.0)
   volumeKeyframes String     @default("[]")
+  speed           Float      @default(1.0)
 
   @@index([trackId])
 }

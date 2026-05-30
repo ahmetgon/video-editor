@@ -147,10 +147,32 @@ function buildVolumeExpression(keyframesJson, baseVolume = 1.0) {
 }
 
 /**
+ * Build atempo filter chain for a given speed.
+ * atempo accepts values in [0.5, 100.0] but for accuracy we chain
+ * factors in [0.5, 2.0] range.
+ */
+function buildAtempoChain(speed) {
+  if (speed === 1.0) return "";
+  const filters = [];
+  let remaining = speed;
+  // Each atempo handles 0.5–2.0 range
+  while (remaining > 2.0 + 0.001) {
+    filters.push("atempo=2.0");
+    remaining /= 2.0;
+  }
+  while (remaining < 0.5 - 0.001) {
+    filters.push("atempo=0.5");
+    remaining /= 0.5;
+  }
+  filters.push(`atempo=${remaining.toFixed(6)}`);
+  return "," + filters.join(",");
+}
+
+/**
  * Export timeline to video file.
  *
  * @param {object} opts
- * @param {Array} opts.clips - Array of { filePath, mediaStartMs, mediaEndMs, timelineStartMs, trackType, hasVideo, hasAudio }
+ * @param {Array} opts.clips - Array of { filePath, mediaStartMs, mediaEndMs, timelineStartMs, trackType, hasVideo, hasAudio, speed }
  * @param {number} opts.width
  * @param {number} opts.height
  * @param {number} opts.fps
@@ -219,14 +241,19 @@ export function exportTimeline({
         const startSec = (clip.mediaStartMs / 1000).toFixed(4);
         const endSec = (clip.mediaEndMs / 1000).toFixed(4);
         const offsetSec = (clip.timelineStartMs / 1000).toFixed(4);
+        const speed = clip.speed || 1;
 
         const vLabel = `v${i}`;
         const outLabel = i < videoClips.length - 1 ? `vtmp${i}` : "outv";
 
-        // Trim → reset PTS → offset → scale to project dimensions
+        // Trim → reset PTS (with speed) → offset → scale to project dimensions
+        const ptsExpr = speed !== 1
+          ? `setpts=(PTS-STARTPTS)/${speed.toFixed(6)}+${offsetSec}/TB`
+          : `setpts=PTS-STARTPTS+${offsetSec}/TB`;
+
         filters.push(
           `[${idx}:v]trim=start=${startSec}:end=${endSec},` +
-          `setpts=PTS-STARTPTS+${offsetSec}/TB,` +
+          `${ptsExpr},` +
           `scale=${width}:${height}:force_original_aspect_ratio=decrease,` +
           `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1[${vLabel}]`
         );
@@ -248,7 +275,11 @@ export function exportTimeline({
         const startSec = (clip.mediaStartMs / 1000).toFixed(4);
         const endSec = (clip.mediaEndMs / 1000).toFixed(4);
         const delayMs = Math.round(clip.timelineStartMs);
+        const speed = clip.speed || 1;
         const label = `a${i}`;
+
+        // Build speed filter (atempo chain)
+        const speedFilter = buildAtempoChain(speed);
 
         // Build volume filter (with keyframe support)
         let volumeFilter = "";
@@ -261,7 +292,7 @@ export function exportTimeline({
 
         filters.push(
           `[${idx}:a]atrim=start=${startSec}:end=${endSec},` +
-          `asetpts=PTS-STARTPTS${volumeFilter},` +
+          `asetpts=PTS-STARTPTS${speedFilter}${volumeFilter},` +
           `adelay=${delayMs}|${delayMs}[${label}]`
         );
         aLabels.push(`[${label}]`);
