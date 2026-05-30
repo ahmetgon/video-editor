@@ -179,11 +179,28 @@ app.patch("/api/projects/:id", async (req, res) => {
 app.delete("/api/projects/:id", async (req, res) => {
   try {
     const prisma = getPrisma();
-    const project = await prisma.project.findUnique({ where: { id: req.params.id } });
+    const project = await prisma.project.findUnique({
+      where: { id: req.params.id },
+      include: { media: true },
+    });
     if (!project) return res.status(404).json({ error: "proje bulunamadi" });
+
+    // Delete R2 objects for all media assets
+    if (isR2Enabled() && project.media.length > 0) {
+      const r2Deletes = project.media
+        .filter((m) => m.r2Key)
+        .map((m) => deleteFromR2(m.r2Key).catch(() => {}));
+      await Promise.allSettled(r2Deletes);
+      console.log(`[project-delete] Cleaned up ${r2Deletes.length} R2 objects for project ${req.params.id}`);
+    }
+
+    // Cascade delete in DB (tracks/clips/media via onDelete: Cascade)
     await prisma.project.delete({ where: { id: req.params.id } });
+
+    // Delete local project directory (media files, thumbnails, waveforms, exports)
     const projDir = path.join(DATA_DIR, "projects", req.params.id);
     fs.rmSync(projDir, { recursive: true, force: true });
+
     res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ error: String(e) });
@@ -606,6 +623,19 @@ app.post("/api/projects/:id/export", async (req, res) => {
       });
 
       console.log(`[export] Done: ${outputPath} (${(stat.size / 1024 / 1024).toFixed(1)} MB)`);
+
+      // Auto-delete export after 30 minutes
+      const EXPORT_TTL_MS = 30 * 60 * 1000;
+      setTimeout(() => {
+        try {
+          if (fs.existsSync(outputPath)) {
+            fs.unlinkSync(outputPath);
+            console.log(`[export] Auto-deleted (30m TTL): ${outputPath}`);
+          }
+        } catch (e) {
+          console.warn(`[export] Auto-delete failed: ${e.message}`);
+        }
+      }, EXPORT_TTL_MS);
     } catch (e) {
       console.error("[export] Error:", e.message);
       emitProgress(project.id, {
@@ -675,7 +705,36 @@ function migrate() {
 }
 
 migrate();
+
+// Clean up stale exports on startup (older than 30 min)
+function cleanupOldExports() {
+  const EXPORT_TTL_MS = 30 * 60 * 1000;
+  const projsDir = path.join(DATA_DIR, "projects");
+  if (!fs.existsSync(projsDir)) return;
+  let cleaned = 0;
+  try {
+    for (const projId of fs.readdirSync(projsDir)) {
+      const exportDir = path.join(projsDir, projId, "exports");
+      if (!fs.existsSync(exportDir)) continue;
+      for (const file of fs.readdirSync(exportDir)) {
+        if (!file.startsWith("export_") || !file.endsWith(".mp4")) continue;
+        const fp = path.join(exportDir, file);
+        try {
+          const stat = fs.statSync(fp);
+          if (Date.now() - stat.mtimeMs > EXPORT_TTL_MS) {
+            fs.unlinkSync(fp);
+            cleaned++;
+          }
+        } catch {}
+      }
+    }
+  } catch {}
+  if (cleaned > 0) console.log(`[cleanup] Deleted ${cleaned} stale export(s)`);
+}
+cleanupOldExports();
+
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`[ve] http://0.0.0.0:${PORT}`);
   console.log(`[ve] Dubbing API: ${DUBBING_API}`);
+  console.log(`[ve] R2 CDN: ${isR2Enabled() ? "enabled" : "disabled (env vars missing)"}`);
 });
