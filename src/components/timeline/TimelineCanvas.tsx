@@ -60,10 +60,14 @@ export function TimelineCanvas() {
     clipId?: string;
     trackId?: string;
     startX: number;
+    startY: number;
     startMs: number;
     originalClip?: Clip;
+    originalTrackIndex?: number;
     keyframeIndex?: number;
+    targetTrackId?: string;
   } | null>(null);
+  const [dropTrackIndex, setDropTrackIndex] = useState<number | null>(null);
 
   const tracks = useTimeline((s) => s.tracks);
   const playheadMs = useTimeline((s) => s.playheadMs);
@@ -314,6 +318,19 @@ export function TimelineCanvas() {
       }
     });
 
+    // ---- Drop target highlight ----
+    if (dropTrackIndex !== null && dropTrackIndex >= 0 && dropTrackIndex < tracks.length) {
+      const dtY = RULER_HEIGHT + dropTrackIndex * (TRACK_HEIGHT + TRACK_GAP);
+      ctx.fillStyle = "rgba(59, 130, 246, 0.15)";
+      ctx.fillRect(0, dtY, w, TRACK_HEIGHT);
+      ctx.strokeStyle = "#3b82f6";
+      ctx.lineWidth = 2;
+      ctx.setLineDash([4, 4]);
+      ctx.strokeRect(0, dtY, w, TRACK_HEIGHT);
+      ctx.setLineDash([]);
+      ctx.lineWidth = 1;
+    }
+
     // ---- Playhead ----
     const phX = timeToX(playheadMs);
     if (phX >= 0 && phX <= w) {
@@ -333,7 +350,7 @@ export function TimelineCanvas() {
       ctx.closePath();
       ctx.fill();
     }
-  }, [tracks, playheadMs, pxPerMs, scrollX, selectedClipId, durationMs, waveformsVer]);
+  }, [tracks, playheadMs, pxPerMs, scrollX, selectedClipId, durationMs, waveformsVer, dropTrackIndex]);
 
   // Resize observer
   useEffect(() => {
@@ -406,7 +423,7 @@ export function TimelineCanvas() {
     if (y < RULER_HEIGHT) {
       const ms = xToTime(x);
       useTimeline.getState().setPlayheadMs(Math.max(0, ms));
-      dragRef.current = { type: "scrub", startX: x, startMs: ms };
+      dragRef.current = { type: "scrub", startX: x, startY: y, startMs: ms };
       return;
     }
 
@@ -433,8 +450,10 @@ export function TimelineCanvas() {
           clipId: result.clip.id,
           trackId: track.id,
           startX: x,
+          startY: y,
           startMs: xToTime(x),
           originalClip: { ...result.clip },
+          originalTrackIndex: result.trackIndex,
           keyframeIndex: kfIdx,
         };
         return;
@@ -456,8 +475,10 @@ export function TimelineCanvas() {
       clipId: result.clip.id,
       trackId: track.id,
       startX: x,
+      startY: y,
       startMs: xToTime(x),
       originalClip: { ...result.clip },
+      originalTrackIndex: result.trackIndex,
     };
 
     if (dragType !== "move") {
@@ -540,6 +561,31 @@ export function TimelineCanvas() {
 
     if (drag.type === "move") {
       canvas.style.cursor = "grabbing";
+
+      // Detect target track for cross-track drag
+      const hoverTrackIndex = Math.floor((y - RULER_HEIGHT) / (TRACK_HEIGHT + TRACK_GAP));
+      const origTrackIdx = drag.originalTrackIndex ?? 0;
+      const origTrack = tracks[origTrackIdx];
+
+      if (
+        hoverTrackIndex >= 0 &&
+        hoverTrackIndex < tracks.length &&
+        hoverTrackIndex !== origTrackIdx
+      ) {
+        const targetTrack = tracks[hoverTrackIndex];
+        // Only allow same type (VIDEO→VIDEO, AUDIO→AUDIO)
+        if (targetTrack.type === origTrack?.type && !targetTrack.locked) {
+          setDropTrackIndex(hoverTrackIndex);
+          drag.targetTrackId = targetTrack.id;
+        } else {
+          setDropTrackIndex(null);
+          drag.targetTrackId = undefined;
+        }
+      } else {
+        setDropTrackIndex(null);
+        drag.targetTrackId = undefined;
+      }
+
       state.updateClipLocal(drag.clipId, {
         timelineStartMs: Math.max(0, orig.timelineStartMs + deltaMs),
       });
@@ -577,10 +623,25 @@ export function TimelineCanvas() {
 
     if (drag.type === "move" && drag.clipId && drag.originalClip) {
       const clip = tracks.flatMap((t) => t.clips).find((c) => c.id === drag.clipId);
-      if (clip && clip.timelineStartMs !== drag.originalClip.timelineStartMs) {
-        useTimeline.getState().pushHistory();
-        api.updateClip(drag.clipId, { timelineStartMs: clip.timelineStartMs }).catch(() => {});
+      if (clip) {
+        const movedTrack = drag.targetTrackId && drag.targetTrackId !== drag.trackId;
+        const movedTime = clip.timelineStartMs !== drag.originalClip.timelineStartMs;
+
+        if (movedTrack) {
+          // Cross-track move
+          useTimeline.getState().pushHistory();
+          useTimeline.getState().moveClipLocal(drag.clipId, drag.targetTrackId!, clip.timelineStartMs);
+          api.updateClip(drag.clipId, {
+            trackId: drag.targetTrackId,
+            timelineStartMs: clip.timelineStartMs,
+          }).catch(() => {});
+          useTimeline.getState().selectTrack(drag.targetTrackId!);
+        } else if (movedTime) {
+          useTimeline.getState().pushHistory();
+          api.updateClip(drag.clipId, { timelineStartMs: clip.timelineStartMs }).catch(() => {});
+        }
       }
+      setDropTrackIndex(null);
     }
 
     if ((drag.type === "trim-left" || drag.type === "trim-right") && drag.clipId) {
@@ -595,6 +656,7 @@ export function TimelineCanvas() {
     }
 
     dragRef.current = null;
+    setDropTrackIndex(null);
   }
 
   // Double click → add volume keyframe
