@@ -11,6 +11,7 @@ import passport from "passport";
 import GoogleStrategy from "passport-google-oauth20";
 import { probeMedia, generateThumbnail, generateWaveform, exportTimeline } from "./ffmpeg.js";
 import { emitProgress, onProgress } from "./events.js";
+import { isR2Enabled, uploadToR2, deleteFromR2, buildR2Key, r2PublicUrl } from "./r2.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
@@ -245,6 +246,20 @@ app.post("/api/projects/:id/media", upload.single("file"), async (req, res) => {
       },
     });
 
+    // Upload to R2 in background (don't block response)
+    if (isR2Enabled()) {
+      const r2Key = buildR2Key(project.id, asset.id, req.file.originalname);
+      uploadToR2(dest, r2Key)
+        .then(() => {
+          return prisma.mediaAsset.update({
+            where: { id: asset.id },
+            data: { r2Key },
+          });
+        })
+        .then(() => console.log(`[r2] Asset ${asset.id} synced`))
+        .catch((e) => console.error(`[r2] Upload failed for ${asset.id}:`, e.message));
+    }
+
     res.status(201).json(asset);
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) });
@@ -272,6 +287,7 @@ app.delete("/api/projects/:id/media/:mid", async (req, res) => {
     if (asset.filePath && fs.existsSync(asset.filePath)) fs.unlinkSync(asset.filePath);
     if (asset.thumbnailPath && fs.existsSync(asset.thumbnailPath)) fs.unlinkSync(asset.thumbnailPath);
     if (asset.waveformPath && fs.existsSync(asset.waveformPath)) fs.unlinkSync(asset.waveformPath);
+    if (asset.r2Key) deleteFromR2(asset.r2Key).catch(() => {});
     res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ error: String(e) });
@@ -282,7 +298,16 @@ app.delete("/api/projects/:id/media/:mid", async (req, res) => {
 app.get("/media/:assetId/stream", async (req, res) => {
   try {
     const asset = await getPrisma().mediaAsset.findUnique({ where: { id: req.params.assetId } });
-    if (!asset || !fs.existsSync(asset.filePath)) return res.status(404).json({ error: "dosya yok" });
+    if (!asset) return res.status(404).json({ error: "dosya yok" });
+
+    // Redirect to R2 CDN if available
+    if (asset.r2Key && isR2Enabled()) {
+      const url = r2PublicUrl(asset.r2Key);
+      return res.redirect(302, url);
+    }
+
+    // Fallback: serve from local disk
+    if (!fs.existsSync(asset.filePath)) return res.status(404).json({ error: "dosya yok" });
 
     const stat = fs.statSync(asset.filePath);
     const range = req.headers.range;

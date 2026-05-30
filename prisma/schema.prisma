@@ -36,6 +36,7 @@ model MediaAsset {
   fileSize      Int
   waveformPath  String?
   thumbnailPath String?
+  r2Key         String?
   clips         Clip[]
   createdAt     DateTime  @default(now())
 

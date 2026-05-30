@@ -19,6 +19,7 @@ export interface MediaAsset {
   fileSize: number;
   waveformPath: string | null;
   thumbnailPath: string | null;
+  r2Key: string | null;
   createdAt: string;
 }
 
